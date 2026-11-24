@@ -153,12 +153,28 @@ app.get('/users/:id', (req, res) => {
   return res.json({ ...user, bookings: userBookings });
 });
 
-// Malformed JSON bodies: return a JSON 400 instead of Express's default HTML error page.
+// Catch-all: any request that didn't match a route above (unknown path, or a known path with the wrong method).
+app.use((req, res) => {
+  sendError(res, 404, 'NOT_FOUND', `Cannot ${req.method} ${req.path}`);
+});
+
+// Error handler: always answer with JSON instead of Express's default HTML error page.
 app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+
   if (err.type === 'entity.parse.failed') {
     return sendError(res, 400, 'INVALID_JSON', 'Invalid JSON body');
   }
-  next(err);
+
+  // Other request problems raised by Express/body-parser, e.g. body too large (413) or unsupported charset (415).
+  const status = err.status ?? err.statusCode;
+  if (status >= 400 && status < 500) {
+    return sendError(res, status, 'BAD_REQUEST', err.expose ? err.message : 'Bad request');
+  }
+
+  // Anything else is a bug: log it, but don't leak details to the client.
+  console.error(err);
+  return sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error');
 });
 
 if (require.main === module) {
