@@ -10,8 +10,14 @@ const venues = new Map(); // venueId -> { id, name, price, dailyCapacity }
 const bookings = new Map(); // bookingId -> booking
 const bookingIdByCode = new Map(); // redemptionCode -> bookingId
 
-// Clears everything and loads the seed data. Call in tests (e.g. beforeEach) for a clean slate.
+// Every time read goes through clock.now() (ms since epoch). Tests can replace it to move the clock,
+// e.g. clock.now = () => start + 11 * 60 * 1000. seed() puts the real clock back.
+const realNow = () => Date.now();
+const clock = { now: realNow };
+
+// Clears everything, restores the real clock and loads the seed data. Call in tests (e.g. beforeEach) for a clean slate.
 function seed() {
+  clock.now = realNow;
   users.clear();
   venues.clear();
   bookings.clear();
@@ -33,6 +39,7 @@ function sendError( res, status, code, message){
 // No 0/O or 1/I/L, so codes are easy to read out loud. 31^8 ≈ 8.5e11 combinations.
 const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 const CODE_LENGTH = 8;
+const CODE_TTL_MS = 10 * 60 * 1000; // a redemption code is valid for 10 minutes after booking
 
 function generateRedemptionCode() {
   let code;
@@ -71,7 +78,8 @@ app.post('/bookings', (req, res) => {
   }
 
   // One timestamp for both the capacity check and createdAt, so they agree on the day at UTC midnight.
-  const createdAt = new Date().toISOString();
+  const now = clock.now();
+  const createdAt = new Date(now).toISOString();
   const today = utcDay(createdAt);
   let bookedToday = 0;
   for (const booking of bookings.values()) {
@@ -90,6 +98,7 @@ app.post('/bookings', (req, res) => {
     venueId,
     status: 'booked',
     createdAt,
+    expiresAt: new Date(now + CODE_TTL_MS).toISOString(),
     redemptionCode: generateRedemptionCode(),
   };
   bookings.set(booking.id, booking);
@@ -116,8 +125,14 @@ app.post('/bookings/redeem', (req, res) => {
     return sendError(res, 409, 'ALREADY_REDEEMED', 'Booking has already been redeemed');
   }
 
+  // The code is valid up to, but not including, expiresAt.
+  const now = clock.now();
+  if (now >= Date.parse(booking.expiresAt)) {
+    return sendError(res, 410, 'CODE_EXPIRED', 'Redemption code has expired');
+  }
+
   booking.status = 'redeemed';
-  booking.redeemedAt = new Date().toISOString();
+  booking.redeemedAt = new Date(now).toISOString();
 
   return res.json(booking);
 });
@@ -151,4 +166,4 @@ if (require.main === module) {
   app.listen(PORT, () => console.log(`Listening on port ${PORT}`));
 }
 
-module.exports = { app, users, venues, bookings, bookingIdByCode, seed };
+module.exports = { app, users, venues, bookings, bookingIdByCode, seed, clock };
